@@ -1,4 +1,4 @@
-#!/usr/local/bin/python3
+#!/usr/bin/python3
 """
 @Author: logic
 @Date: 20190623
@@ -12,14 +12,53 @@
 import re
 import click
 import sys
+from enum import Enum
 
-HEAD_RE = re.compile('^#+')
+"""
+Regex to match a header
+"""
+HEAD_RE_PATTERN = r'^#+'
+HEAD_RE = re.compile(HEAD_RE_PATTERN)
+
+"""
+Regex to find places in the text that should be custom-numbered.
+
+TODO: add to readme
+TODO: also support sub-numbering...?
+"""
+CUSTOM_RE_PATTERN = ('^\s*\\\\[A-Za-z]\.\?\s*')
+CUSTOM_RE = re.compile(CUSTOM_RE_PATTERN)
+
+"""
+alright maybe i'm getting lost in the sauce here 
+but what the hell, why not
+"""
+class NumberingMode(Enum):
+    HEADERS = 0
+    CUSTOM = 1
+
+
+# Numberings will go in here - for example, \A.? might turn into 1.1, 
+# while \B.? might turn into 2.1
+numberings = dict()
+
 initial_num_level = [0, 1, 1, 1, 1]  # 4 level: 0.1.1.1 => 5 level: 0.1.1.1.1 => ...
 
 def __reset_sub_levels(level, index):
     level[index:] = initial_num_level[index:]
     return level
 
+"""
+clean:
+
+    Switches numbered headings to non-numbered headings.
+    e.g.
+    ### 1.2.3 This is a heading => ### This is a heading
+
+    that regex takes care of it, handles whitespace too.
+
+    (see? was that so hard?)
+"""
 def __clean(content):
     lines = content.split('\n')
     length = len(lines)
@@ -29,28 +68,59 @@ def __clean(content):
             lines[i] = re.sub(r'^\s*(#+)\s+(\d+\.)+\s+', r'\1 ', line, 1)
     print('\n'.join(lines))
 
-def __add(content):
+"""
+add:
+
+    Main script functionality - switches non-numbered headings to numbered headings.
+    e.g.
+    ### This is a heading => ### 1.2.3 This is a heading
+"""
+def __add(content, mode):
     num_level = list(initial_num_level)
     lines = content.split('\n')
     length = len(lines)
 
-    last_head_len = 1
+    last_num_matches = 1
     code_tag_cnt = 0
+    match_re = HEAD_RE if mode == NumberingMode.HEADERS else CUSTOM_RE
+
+    # count hashes or question marks:
+    match_re_pattern = HEAD_RE_PATTERN if mode == NumberingMode.HEADERS else r'\?+'
     for i in range(length):
         line = lines[i]
         if re.match(r'\s*```',line):
             code_tag_cnt += 1
-        if code_tag_cnt%2 == 0 and HEAD_RE.match(line): # filter # in code paragraph
-            head = re.match(r'^#+', line).group()
-            head_len = len(head)
-            if head_len <= last_head_len:
-                num_level = __reset_sub_levels(num_level, head_len)
-                num_level[head_len - 1] = num_level[head_len - 1] + 1
-            last_head_len = head_len
+            # ^ if it's odd we're in a code block - ignore #
+        if code_tag_cnt%2 == 0 and match_re.match(line): 
+            matches = re.match(match_re_pattern, line).groups()
+            num_matches = len(matches)
+            if num_matches <= last_num_matches:
+                num_level = __reset_sub_levels(num_level, num_matches)
+                num_level[num_matches - 1] = num_level[num_matches - 1] + 1 # increment level
+            last_num_matches = num_matches
+            
+            number_str = ''
+            if mode == NumberingMode.CUSTOM and num_matches == 0:
+                top_level = 1
+                key = matches[0].strip()[1] # first character is the letter (after strip whitespace)
+                if key in numberings:
+                    numberings[key] += 1
+                    top_level = numberings[key]
+                else:
+                    numberings[key] = 1
+                number_str = str(top_level)
 
-            number_str = '.'.join([str(i) for i in num_level[:head_len]]) + '.'
+            number_str += '.'.join([str(i) for i in num_level[:num_matches]]) + '.'
+
+            # many period? we only want one.. i guess? maybe that for loop does something funky?
             number_str = re.sub(r'\.+$', '.', number_str)
-            lines[i] = re.sub(r'^(#+)\s+', r'\1 %s ' % number_str, line)
+
+            # First captured group (hashes) - turn into number_str
+            # lines[i] = __sub(line, number_str, mode)
+
+            sub_pattern_find = r'^(#+)\s+' if mode == NumberingMode.HEADERS else r'^\s*\\\\[A-Za-z]\.\?\s+'
+            sub_pattern_replace = r'\1 %s ' % number_str if mode == NumberingMode.HEADERS else r'%s ' % number_str
+            lines[i] = re.sub(sub_pattern_find, sub_pattern_replace, line)
     print('\n'.join(lines))
 
 
@@ -70,11 +140,18 @@ def add():
     """
     # add number
     """
-    __add(sys.stdin.read())
+    __add(sys.stdin.read(), NumberingMode.HEADERS)
+
+def number():
+    """
+    # custom numbering
+    """
+    __add(sys.stdin.read(), NumberingMode.CUSTOM)
 
 # pack command
 cli.add_command(clean)
 cli.add_command(add)
+cli.add_command(number)
 
 if __name__ == '__main__':
     cli()
