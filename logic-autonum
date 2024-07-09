@@ -26,7 +26,7 @@ Regex to find places in the text that should be custom-numbered.
 TODO: add to readme
 TODO: also support sub-numbering...?
 """
-CUSTOM_RE_PATTERN = ('^\s*\\\\[A-Za-z]\.\?\s*')
+CUSTOM_RE_PATTERN = r'^\s*\\[A-Za-z](\.\?)*\s*'
 CUSTOM_RE = re.compile(CUSTOM_RE_PATTERN)
 
 """
@@ -39,8 +39,12 @@ class NumberingMode(Enum):
 
 
 # Numberings will go in here - for example, \A.? might turn into 1.1, 
-# while \B.? might turn into 2.1
+# while \B.? might turn into 2.1, \B.?.? => 2.1.1
+# Values are lists
 numberings = dict()
+# this one tells you how deep you are on that key
+numberings_last_level = dict()
+num_tops = 0
 
 initial_num_level = [0, 1, 1, 1, 1]  # 4 level: 0.1.1.1 => 5 level: 0.1.1.1.1 => ...
 
@@ -76,6 +80,7 @@ add:
     ### This is a heading => ### 1.2.3 This is a heading
 """
 def __add(content, mode):
+    global num_tops, numberings
     num_level = list(initial_num_level)
     lines = content.split('\n')
     length = len(lines)
@@ -85,40 +90,51 @@ def __add(content, mode):
     match_re = HEAD_RE if mode == NumberingMode.HEADERS else CUSTOM_RE
 
     # count hashes or question marks:
-    match_re_pattern = HEAD_RE_PATTERN if mode == NumberingMode.HEADERS else r'\?+'
+    match_re_pattern = HEAD_RE_PATTERN if mode == NumberingMode.HEADERS else CUSTOM_RE_PATTERN
     for i in range(length):
         line = lines[i]
         if re.match(r'\s*```',line):
             code_tag_cnt += 1
             # ^ if it's odd we're in a code block - ignore #
         if code_tag_cnt%2 == 0 and match_re.match(line): 
-            matches = re.match(match_re_pattern, line).groups()
-            num_matches = len(matches)
+            pregroup_matches = re.match(match_re_pattern, line)
+            if pregroup_matches == None:
+                lines[i] = line
+                continue
+            matches = pregroup_matches.group()
+            num_matches = len(matches) if mode == NumberingMode.HEADERS else matches.count('.?')
             if num_matches <= last_num_matches:
                 num_level = __reset_sub_levels(num_level, num_matches)
                 num_level[num_matches - 1] = num_level[num_matches - 1] + 1 # increment level
-            last_num_matches = num_matches
             
             number_str = ''
-            if mode == NumberingMode.CUSTOM and num_matches == 0:
-                top_level = 1
-                key = matches[0].strip()[1] # first character is the letter (after strip whitespace)
-                if key in numberings:
-                    numberings[key] += 1
-                    top_level = numberings[key]
-                else:
-                    numberings[key] = 1
-                number_str = str(top_level)
+            if mode == NumberingMode.CUSTOM and num_matches > 0:
+                key = matches.strip()[1] # [1] is the letter (after strip whitespace)
+                entry = None
+                if key not in numberings:
+                    num_tops += 1
+                    numberings[key] = [num_tops,0,0,0,0]
+                    numberings_last_level[key] = 1
+                if num_matches < numberings_last_level[key]:
+                    for j in range(num_matches+1, 5):
+                        numberings[key][j] = 0
+                    numberings_last_level[key] = num_matches
+                numberings[key][num_matches] = numberings[key][num_matches] + 1
+                entry = numberings[key]
+                number_str = '.'.join([str(k) for k in entry[0:num_matches+1]]) + '.'
+            else:
+                number_str = '.'.join([str(k) for k in num_level[0:num_matches]]) + '.'
 
-            number_str += '.'.join([str(i) for i in num_level[:num_matches]]) + '.'
+            numberings_last_level[key] = num_matches
 
             # many period? we only want one.. i guess? maybe that for loop does something funky?
             number_str = re.sub(r'\.+$', '.', number_str)
+            #print(number_str)
 
             # First captured group (hashes) - turn into number_str
             # lines[i] = __sub(line, number_str, mode)
 
-            sub_pattern_find = r'^(#+)\s+' if mode == NumberingMode.HEADERS else r'^\s*\\\\[A-Za-z]\.\?\s+'
+            sub_pattern_find = r'^(#+)\s+' if mode == NumberingMode.HEADERS else r'^\s*\\[A-Za-z](\.\?)*\s+'
             sub_pattern_replace = r'\1 %s ' % number_str if mode == NumberingMode.HEADERS else r'%s ' % number_str
             lines[i] = re.sub(sub_pattern_find, sub_pattern_replace, line)
     print('\n'.join(lines))
@@ -142,6 +158,7 @@ def add():
     """
     __add(sys.stdin.read(), NumberingMode.HEADERS)
 
+@click.command()
 def number():
     """
     # custom numbering
